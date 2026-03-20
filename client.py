@@ -50,8 +50,8 @@ class RobotController:
         self.running = True
 
         # --- Socket Setup ---
-        # PUB -> Slave's SUB (commands out)
-        self.pub_cmd = self.context.socket(zmq.PUB)
+        # DEALER -> Slave's ROUTER (commands out)
+        self.pub_cmd = self.context.socket(zmq.DEALER)
         self.pub_cmd.connect(f"tcp://{ip}:5555")
 
         # SUB <- Slave's PUB (responses: ACKs, errors, etc.)
