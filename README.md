@@ -1,80 +1,158 @@
-# robomotionsim-client
+# Robomotionsim-PyClient
 
-Python client library for controlling a robot in the RoboMotionSim simulation via ZeroMQ.
+Python client library for controlling a robot in the [RoboMotionSim](https://github.com/Vojtaven/RoboMotionSim) simulation over ZeroMQ.
+
+- Simple, dependency-light: only requires `pyzmq`
+- Non-blocking by design — you control the update loop
+- Full telemetry access: position, velocity, wheel speeds, angles
+- Per-motor and high-level movement commands
+
+---
+
+## Requirements
+
+- Python 3.10+
+- [`pyzmq`](https://pyzmq.readthedocs.io/)
+
+---
 
 ## Installation
-
-**Requirements:** Python 3.10+, `pyzmq`
 
 ```bash
 pip install pyzmq
 ```
 
-Copy the `robomotionsim_client/` folder into your project, or add this repo to your Python path.
+Clone or copy the `robomotionsim_pyclient/` folder into your project:
+
+```
+your_project/
+├── robomotionsim_pyclient/   ← copy here
+│   ├── __init__.py
+│   └── robot.py
+└── your_script.py
+```
+
+Or add this repo to your Python path:
+
+```bash
+git clone https://github.com/Vojtaven/RoboMotionSim
+cd robomotionsim-pyclient
+```
+
+---
 
 ## Quick Start
 
-### Non-blocking loop pattern
+### Connect to the simulation
 
 ```python
 from robomotionsim_client import Robot
 
-robot = Robot("tcp://localhost:5555", "tcp://localhost:5556")
-robot.connect()
-
-robot.move_by_distance_raw(distance_mm=500, x_speed=100, y_speed=0,
-                           rotation_speed=0, front_rotation_speed=0)
-
-while not robot.is_move_finished():
-    robot.run()  # polls sockets, sends heartbeats, updates telemetry
-
-    # read telemetry any time
-    print(f"x={robot.get_distance_traveled_x():.1f} y={robot.get_distance_traveled_y():.1f}")
-
-robot.disconnect()
+robot = Robot(
+    command_address="tcp://localhost:5555",
+    telemetry_address="tcp://localhost:5556",
+)
+robot.connect()   # raises RobotConnectionError if sim is not running
+print("Connected!")
 ```
 
-### Blocking pattern
+### Move and wait (blocking)
+
+The simplest pattern — send a command and block until it completes:
 
 ```python
-from robomotionsim_client import Robot
+# Move forward 500 mm at speed 100 mm/s
+robot.move_by_distance_raw(distance_mm=500, x_speed=100, y_speed=0,
+                           rotation_speed=0, front_rotation_speed=0)
+robot.run_to_position()  # blocks until the move is done
 
-robot = Robot("tcp://localhost:5555", "tcp://localhost:5556")
-robot.connect()
+print(f"Arrived at x={robot.get_distance_traveled_x():.1f} mm")
 
-robot.move_by_distance_raw(500, 100, 0, 0, 0)
-robot.run_to_position()  # blocks until CMD_COMPLETE
-
-robot.move_by_time_raw(2.0, 0, 50, 0, 0)
+# Turn 90 degrees
+robot.move_by_angle_raw(angle_deg=90, x_speed=0, y_speed=0,
+                        rotation_speed=50, front_rotation_speed=0)
 robot.run_to_position()
 
 robot.disconnect()
 ```
 
+### Non-blocking loop (live telemetry)
+
+Use this pattern to read telemetry while the robot moves:
+
+```python
+import time
+
+robot.move_at_speed_raw(x_speed=80, y_speed=0, rotation_speed=0, front_rotation_speed=0)
+
+start = time.monotonic()
+while time.monotonic() - start < 5.0:
+    robot.run()  # polls sockets, updates telemetry, sends heartbeats
+
+    print(
+        f"pos=({robot.get_distance_traveled_x():7.1f}, {robot.get_distance_traveled_y():7.1f})  "
+        f"vel=({robot.get_velocity_x():6.1f}, {robot.get_velocity_y():6.1f})  "
+        f"angle={robot.get_chassis_angle():6.1f} deg",
+        end="\r",
+    )
+    time.sleep(0.05)
+
+robot.stop()
+robot.run_to_position()
+robot.disconnect()
+```
+
+> **Important:** You must call `robot.run()` regularly in your loop. It drives all socket I/O, telemetry updates, and heartbeats. Without it, the simulation will eventually disconnect you.
+
+---
+
+## Examples
+
+| File | Description |
+|---|---|
+| [`examples/basic_movement.py`](examples/basic_movement.py) | Move forward, turn, print position |
+| [`examples/motor_control.py`](examples/motor_control.py) | Per-motor speed and distance control |
+| [`examples/telemetry_loop.py`](examples/telemetry_loop.py) | Live telemetry display with continuous speed |
+
+---
+
 ## API Reference
 
 ### `Robot(command_address, telemetry_address)`
 
-Create a robot client. Addresses are ZeroMQ endpoints, e.g. `"tcp://localhost:5555"`.
+```python
+robot = Robot("tcp://localhost:5555", "tcp://localhost:5556")
+```
+
+Both arguments are ZeroMQ TCP endpoints. The command socket uses DEALER/ROUTER, the telemetry socket uses PUB/SUB.
+
+---
 
 ### Lifecycle
 
 | Method | Description |
 |---|---|
-| `connect()` | Perform handshake with the sim. Raises `RobotConnectionError` on failure. |
-| `disconnect()` | Send DISCONNECT and close sockets. |
-| `run()` | Non-blocking update tick. Polls command/telemetry sockets, sends heartbeats. Must be called in a loop. |
-| `run_to_position()` | Blocking loop — calls `run()` until the last sent command receives CMD_COMPLETE. |
+| `connect()` | Handshake with the sim. Raises `RobotConnectionError` on failure or timeout. |
+| `disconnect()` | Gracefully disconnect and close sockets. |
+| `run()` | **Non-blocking** update tick — call this in your loop. Polls sockets, updates telemetry, sends heartbeats. |
+| `run_to_position()` | **Blocking** — calls `run()` in a loop until the last command completes. |
+| `is_move_finished()` | Returns `True` if the last sent command has completed. |
 
-### Status
-
-| Method | Returns | Description |
-|---|---|---|
-| `is_move_finished()` | `bool` | `True` if the last sent command received CMD_COMPLETE. |
+---
 
 ### Telemetry
 
-All values are cached from the most recent telemetry frame.
+Call `robot.run()` first to ensure values are fresh. All angles are in **degrees**, distances in **mm**, speeds in **mm/s**.
+
+```python
+robot.run()
+
+x   = robot.get_distance_traveled_x()   # mm
+y   = robot.get_distance_traveled_y()   # mm
+vx  = robot.get_velocity_x()            # mm/s
+vy  = robot.get_velocity_y()            # mm/s
+ang = robot.get_chassis_angle()         # degrees
+```
 
 | Method | Returns | Description |
 |---|---|---|
@@ -82,39 +160,74 @@ All values are cached from the most recent telemetry frame.
 | `get_distance_traveled_y()` | `float` | Y distance traveled (mm) |
 | `get_velocity_x()` | `float` | Local X velocity (mm/s) |
 | `get_velocity_y()` | `float` | Local Y velocity (mm/s) |
-| `get_front_angle()` | `float` | Front angle (rad) |
-| `get_chassis_angle()` | `float` | Chassis angle (rad) |
-| `get_chassis_angular_velocity()` | `float` | Chassis angular velocity (rad/s) |
-| `get_wheel_speed(wheel_index)` | `float` | Speed of wheel at index |
-| `get_wheel_distance(wheel_index)` | `float` | Distance traveled by wheel at index |
+| `get_front_angle()` | `float` | Front module angle (deg) |
+| `get_chassis_angle()` | `float` | Chassis heading angle (deg) |
+| `get_chassis_angular_velocity()` | `float` | Chassis angular velocity (deg/s) |
+| `get_wheel_speed(wheel_index)` | `float` | Speed of wheel at index (mm/s) |
+| `get_wheel_distance(wheel_index)` | `float` | Distance traveled by wheel at index (mm) |
+
+---
 
 ### Movement Commands
 
-All commands send immediately and return. Use `run()` / `run_to_position()` to process responses.
+All commands return immediately. Use `run_to_position()` to wait for completion, or `run()` in a loop.
 
-Speeds are in mm/s, distances in mm, angles in radians, times in seconds.
+**Units:** speeds in mm/s · distances in mm · angles in **degrees** · times in seconds
 
-| Method | Description |
-|---|---|
-| `move_by_distance_raw(distance_mm, x_speed, y_speed, rotation_speed, front_rotation_speed)` | Move a distance with raw speeds |
-| `move_by_time_raw(time_s, x_speed, y_speed, rotation_speed, front_rotation_speed)` | Move for a time with raw speeds |
-| `move_at_speed_raw(x_speed, y_speed, rotation_speed, front_rotation_speed)` | Set continuous raw speed (no auto-stop) |
-| `stop()` | Immediately stop all motors |
-| `move_at_speed_motors(speeds)` | Set per-motor speeds. `speeds` is a `list[float]`. |
-| `run_motor_for_time(motor_id, speed, time_s)` | Run one motor for a duration |
-| `run_motor_for_distance(motor_id, speed, distance_mm)` | Run one motor for a distance |
-| `stop_motor(motor_id)` | Immediately stop one motor |
-| `start_motor(motor_id, speed)` | Start one motor at a speed |
-| `move_by_time(time_s, x_speed, y_speed, rotation_speed, center_x_mm, center_y_mm, rotate_chassis)` | Move for a time with pivot point |
-| `move_by_distance(distance_mm, x_speed, y_speed, rotation_speed, center_x_mm, center_y_mm, rotate_chassis)` | Move a distance with pivot point |
-| `move_at_speed(x_speed, y_speed, rotation_speed, center_x_mm, center_y_mm, rotate_chassis)` | Set continuous speed with pivot point |
-| `move_by_angle(x_speed, y_speed, angle_rad, rotation_speed, center_x_mm, center_y_mm, rotate_chassis)` | Rotate by an angle with pivot point |
-| `move_by_angle_raw(angle_rad, x_speed, y_speed, rotation_speed, front_rotation_speed)` | Rotate by an angle with raw speeds |
-| `clear_command_queue()` | Clear all queued commands on the sim |
+#### High-level (with pivot point)
+
+```python
+robot.move_by_distance(distance_mm=500, x_speed=100, y_speed=0, rotation_speed=0,
+                       center_x_mm=0, center_y_mm=0, rotate_chassis=False)
+
+robot.move_by_time(time_s=2.0, x_speed=100, y_speed=0, rotation_speed=20,
+                   center_x_mm=0, center_y_mm=0, rotate_chassis=True)
+
+robot.move_at_speed(x_speed=80, y_speed=0, rotation_speed=0,
+                    center_x_mm=0, center_y_mm=0, rotate_chassis=False)
+
+robot.move_by_angle(x_speed=0, y_speed=0, angle_deg=90, rotation_speed=50,
+                    center_x_mm=0, center_y_mm=0, rotate_chassis=True)
+```
+
+#### Raw (no pivot)
+
+```python
+robot.move_by_distance_raw(distance_mm=500, x_speed=100, y_speed=0,
+                            rotation_speed=0, front_rotation_speed=0)
+
+robot.move_by_time_raw(time_s=2.0, x_speed=0, y_speed=100,
+                       rotation_speed=0, front_rotation_speed=0)
+
+robot.move_at_speed_raw(x_speed=80, y_speed=0, rotation_speed=0, front_rotation_speed=0)
+
+robot.move_by_angle_raw(angle_deg=90, x_speed=0, y_speed=0,
+                        rotation_speed=50, front_rotation_speed=0)
+```
+
+#### Stop
+
+```python
+robot.stop()               # stop all motors immediately
+robot.clear_command_queue() # discard all queued commands on the sim
+```
+
+#### Per-motor control
+
+```python
+robot.move_at_speed_motors([100, -100, 50, -50])  # set all motors at once
+
+robot.run_motor_for_time(motor_id=0, speed=100, time_s=2.0)
+robot.run_motor_for_distance(motor_id=1, speed=80, distance_mm=500)
+robot.start_motor(motor_id=0, speed=60)
+robot.stop_motor(motor_id=0)
+```
+
+---
 
 ### Exceptions
 
-| Exception | When |
+| Exception | When raised |
 |---|---|
-| `RobotConnectionError` | Handshake fails or times out |
-| `RobotCommandError` | Sim returns CMD_ERROR for a command |
+| `RobotConnectionError` | `connect()` times out or receives an unexpected response |
+| `RobotCommandError` | The sim returns `CMD_ERROR` for a sent command |
