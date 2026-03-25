@@ -1,4 +1,4 @@
-"""Per-motor control example — spin individual motors."""
+"""Per-motor control example for 3 wheeled omni robot — spin individual motors."""
 
 import sys
 import os
@@ -23,7 +23,7 @@ robot.run_to_position()
 
 # Set all motors at once
 print("Setting all motors to different speeds...")
-robot.move_at_speed_motors([100, -100, 50, -50])
+robot.move_at_speed_motors([100, -100, 50])
 
 # Let it run for a bit, printing wheel speeds
 import time
