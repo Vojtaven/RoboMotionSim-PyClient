@@ -50,13 +50,14 @@ class RobotCommandError(Exception):
     pass
 
 
-_HEADER_FMT = "<IHB"
+# Wire formats must match the simulator's packed C structs (little-endian)
+_HEADER_FMT = "<IHB"       # id(u32) + payload_size(u16) + type(u8)
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)  # 7
 
-_TELEMETRY_ODO_FMT = "<QfffffffB"
+_TELEMETRY_ODO_FMT = "<QfffffffB"  # timestamp + 7 floats + wheel_count
 _TELEMETRY_ODO_SIZE = struct.calcsize(_TELEMETRY_ODO_FMT)  # 41
 
-_TELEMETRY_WHEEL_FMT = "<ff"
+_TELEMETRY_WHEEL_FMT = "<ff"       # speed + distance per wheel
 _TELEMETRY_WHEEL_SIZE = struct.calcsize(_TELEMETRY_WHEEL_FMT)  # 8
 
 _HEARTBEAT_INTERVAL = 2.0  # seconds
@@ -72,9 +73,9 @@ class Robot:
         self._dealer: zmq.Socket | None = None
         self._sub: zmq.Socket | None = None
 
-        self._msg_id = 0
-        self._last_cmd_id = 0
-        self._completed_ids: set[int] = set()
+        self._msg_id = 0               # monotonic counter for all outgoing messages
+        self._last_cmd_id = 0          # id of the most recent movement command
+        self._completed_ids: set[int] = set()  # ids confirmed via CMD_COMPLETE
         self._motor_count = 0
 
         self._last_heartbeat_time = 0.0
@@ -109,11 +110,12 @@ class Robot:
         return msg_id
 
     def _send_command(self, cmd_type: CommandType, params: bytes = b"") -> int:
+        # Command payload = command type (u16) + command-specific params
         cmd_header = struct.pack("<H", int(cmd_type))
         payload = cmd_header + params
         msg_id = self._send(MsgType.COMMAND, payload)
         self._last_cmd_id = msg_id
-        self._completed_ids.discard(msg_id)
+        self._completed_ids.discard(msg_id)  # reset so is_move_finished() returns False
         return msg_id
 
     def _parse_header(self, data: bytes) -> tuple[int, int, MsgType]:
@@ -139,7 +141,7 @@ class Robot:
             self._motor_count = struct.unpack_from("<H", payload)[0]
 
     def _poll_dealer(self):
-        while True:
+        while True:  # drain all pending messages without blocking
             result = self._recv_dealer(0)
             if result is None:
                 break
@@ -162,12 +164,13 @@ class Robot:
             self._chassis_angular_velocity = fields[7]
             wheel_count = fields[8]
 
+            # Per-wheel data follows the odometry header as a flat array
             offset = _TELEMETRY_ODO_SIZE
             speeds = []
             distances = []
             for _ in range(wheel_count):
                 if offset + _TELEMETRY_WHEEL_SIZE > len(payload):
-                    break
+                    break  # truncated message, keep what we have
                 speed, dist = struct.unpack_from(_TELEMETRY_WHEEL_FMT, payload, offset)
                 speeds.append(speed)
                 distances.append(dist)
@@ -190,8 +193,8 @@ class Robot:
         self._dealer.connect(self._command_address)
 
         self._sub = self._ctx.socket(zmq.SUB)
-        self._sub.setsockopt(zmq.CONFLATE, 1)
-        self._sub.setsockopt(zmq.SUBSCRIBE, b"")
+        self._sub.setsockopt(zmq.CONFLATE, 1)   # only keep the latest telemetry frame
+        self._sub.setsockopt(zmq.SUBSCRIBE, b"") # subscribe to all messages
         self._sub.connect(self._telemetry_address)
 
         self._send(MsgType.HANDSHAKE)
@@ -253,6 +256,7 @@ class Robot:
     def get_velocity_y(self) -> float:
         return self._velocity_y
 
+    # Wire protocol sends angles in radians, public API exposes degrees
     def get_front_angle(self) -> float:
         return self._front_angle * _RAD2DEG
 
@@ -272,6 +276,7 @@ class Robot:
     #  Commands
     # ------------------------------------------------------------------ #
 
+    # All movement methods convert deg -> rad before sending (wire protocol is radians)
     def move_by_distance_raw(self, distance_mm: float, x_speed: float, y_speed: float,
                              rotation_speed: float, front_rotation_speed: float) -> None:
         self._send_command(CommandType.MOVE_BY_DISTANCE_RAW,

@@ -22,11 +22,11 @@ Python client library for controlling a robot in the [RoboMotionSim](https://git
 pip install pyzmq
 ```
 
-Clone or copy the `robomotionsim_pyclient/` folder into your project:
+Clone or copy the `robomotionsim_client/` folder into your project:
 
 ```
 your_project/
-├── robomotionsim_pyclient/   ← copy here
+├── robomotionsim_client/   ← copy here
 │   ├── __init__.py
 │   └── robot.py
 └── your_script.py
@@ -35,8 +35,8 @@ your_project/
 Or add this repo to your Python path:
 
 ```bash
-git clone https://github.com/Vojtaven/RoboMotionSim
-cd robomotionsim-pyclient
+git clone https://github.com/Vojtaven/RoboMotionSim-PyClient
+cd RoboMotionSim-PyClient
 ```
 
 ---
