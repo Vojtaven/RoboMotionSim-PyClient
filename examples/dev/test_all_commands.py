@@ -5,7 +5,7 @@ import sys
 import os
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from robomotionsim_client import Robot
 from robomotionsim_client.robot import RobotCommandError
