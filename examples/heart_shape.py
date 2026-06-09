@@ -35,7 +35,7 @@ for i in range(NUM_POINTS + 1):
     waypoints.append(heart_point(t))
 
 # Drive smooth arcs through waypoints
-current_heading = 0.0  # degrees, 0 = +X
+current_heading = robot.get_chassis_angle() + robot.get_front_angle()  # Start with current robot heading as initial heading
 
 print(f"Tracing heart shape ({NUM_POINTS} segments)...")
 for i in range(len(waypoints) - 1):
