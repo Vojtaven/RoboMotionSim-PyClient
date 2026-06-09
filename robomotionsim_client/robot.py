@@ -61,7 +61,7 @@ _TELEMETRY_WHEEL_FMT = "<ff"       # speed + distance per wheel
 _TELEMETRY_WHEEL_SIZE = struct.calcsize(_TELEMETRY_WHEEL_FMT)  # 8
 
 _HEARTBEAT_INTERVAL = 2.0  # seconds
-_CONNECT_TIMEOUT = 500000  # ms
+_CONNECT_TIMEOUT = 60000  # ms
 
 
 class Robot:
@@ -184,22 +184,35 @@ class Robot:
             self._send(MsgType.HEARTBEAT)
             self._last_heartbeat_time = now
 
+    # Tries to receive a message, but periodically checks for interupts (e.g. KeyboardInterrupt etc.)
+    def _recv_dealer_with_timeout(self,timeout_ms: int,poll_interval_ms: int = 100) -> tuple[int, MsgType, bytes] | None:
+        deadline = time.monotonic() + timeout_ms / 1000.0
+
+        while time.monotonic() < deadline:
+            result = self._recv_dealer(poll_interval_ms)
+            if result is not None:
+                return result
+
+        return None
+            
     # ------------------------------------------------------------------ #
     #  Lifecycle
     # ------------------------------------------------------------------ #
 
     def connect(self) -> None:
         self._dealer = self._ctx.socket(zmq.DEALER)
+        self._dealer.setsockopt(zmq.LINGER, 0)
         self._dealer.connect(self._command_address)
 
         self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.LINGER, 0)
         self._sub.setsockopt(zmq.CONFLATE, 1)   # only keep the latest telemetry frame
         self._sub.setsockopt(zmq.SUBSCRIBE, b"") # subscribe to all messages
         self._sub.connect(self._telemetry_address)
 
         self._send(MsgType.HANDSHAKE)
 
-        result = self._recv_dealer(_CONNECT_TIMEOUT)
+        result = self._recv_dealer_with_timeout(_CONNECT_TIMEOUT)
         if result is None:
             raise RobotConnectionError("Handshake timed out")
         msg_id, msg_type, payload = result
@@ -207,9 +220,11 @@ class Robot:
             raise RobotConnectionError(f"Expected HANDSHAKE_ACK, got {msg_type!r}")
 
         # Server sends MOTOR_COUNT once it knows the wheel count
-        result = self._recv_dealer(_CONNECT_TIMEOUT)
+        result = self._recv_dealer_with_timeout(_CONNECT_TIMEOUT)
         if result is not None:
             self._process_dealer_message(*result)
+        else:
+            raise RobotConnectionError("Did not receive MOTOR_COUNT after handshake")
 
         self._last_heartbeat_time = time.monotonic()
 
@@ -218,7 +233,9 @@ class Robot:
             return
         self._send(MsgType.DISCONNECT)
         # Brief wait for DISCONNECT_ACK (server may not send it)
-        self._recv_dealer(1000)
+        self._recv_dealer_with_timeout(1000)
+        self._dealer.setsockopt(zmq.LINGER, 0)
+        self._sub.setsockopt(zmq.LINGER, 0)
         self._dealer.close()
         self._sub.close()
         self._dealer = None
